@@ -1,18 +1,19 @@
-/*
-Copyright 2023.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright (c) 2021-2024 SigScalr, Inc.
+//
+// This file is part of SigLens Observability Solution
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 package aggregations
 
@@ -146,7 +147,7 @@ func performAggOnResult(nodeResult *structs.NodeResult, agg *structs.QueryAggreg
 		}
 
 		if agg.OutputTransforms.FilterRows != nil {
-			err := performFilterRows(nodeResult, agg.OutputTransforms.FilterRows)
+			err := performFilterRows(nodeResult, agg.OutputTransforms.FilterRows, recs)
 
 			if err != nil {
 				return fmt.Errorf("performAggOnResult: %v", err)
@@ -812,8 +813,8 @@ func performDedupColRequest(nodeResult *structs.NodeResult, aggs *structs.QueryA
 func performDedupColRequestWithoutGroupby(nodeResult *structs.NodeResult, letColReq *structs.LetColumnsRequest, recs map[string]map[string]interface{},
 	finalCols map[string]bool, numTotalSegments uint64, finishesSegment bool) error {
 
-	letColReq.DedupColRequest.ProcessedSegmentsLock.Lock()
-	defer letColReq.DedupColRequest.ProcessedSegmentsLock.Unlock()
+	letColReq.DedupColRequest.AcquireProcessedSegmentsLock()
+	defer letColReq.DedupColRequest.ReleaseProcessedSegmentsLock()
 	if finishesSegment {
 		letColReq.DedupColRequest.NumProcessedSegments++
 	}
@@ -1218,8 +1219,8 @@ func performSortColRequest(nodeResult *structs.NodeResult, aggs *structs.QueryAg
 func performSortColRequestWithoutGroupby(nodeResult *structs.NodeResult, letColReq *structs.LetColumnsRequest, recs map[string]map[string]interface{},
 	recordIndexInFinal map[string]int, finalCols map[string]bool, numTotalSegments uint64, finishesSegment bool) error {
 
-	letColReq.SortColRequest.ProcessedSegmentsLock.Lock()
-	defer letColReq.SortColRequest.ProcessedSegmentsLock.Unlock()
+	letColReq.SortColRequest.AcquireProcessedSegmentsLock()
+	defer letColReq.SortColRequest.ReleaseProcessedSegmentsLock()
 	if finishesSegment {
 		letColReq.SortColRequest.NumProcessedSegments++
 	}
@@ -1315,8 +1316,16 @@ func performSortColRequestOnHistogram(nodeResult *structs.NodeResult, letColReq 
 			return comparisonRes == -1
 		})
 
-		resInOrder := make([]*structs.BucketResult, len(aggregationResult.Results))
+		limit := len(aggregationResult.Results)
+		if letColReq.SortColRequest.Limit < uint64(len(aggregationResult.Results)) {
+			limit = int(letColReq.SortColRequest.Limit)
+		}
+
+		resInOrder := make([]*structs.BucketResult, limit)
 		for index, key := range recKeys {
+			if index >= limit {
+				break
+			}
 			resInOrder[index] = aggregationResult.Results[key]
 		}
 
@@ -1368,8 +1377,16 @@ func performSortColRequestOnMeasureResults(nodeResult *structs.NodeResult, letCo
 		return comparisonRes == -1
 	})
 
-	resInOrder := make([]*structs.BucketHolder, len(nodeResult.MeasureResults))
+	limit := len(nodeResult.MeasureResults)
+	if letColReq.SortColRequest.Limit < uint64(len(nodeResult.MeasureResults)) {
+		limit = int(letColReq.SortColRequest.Limit)
+	}
+
+	resInOrder := make([]*structs.BucketHolder, limit)
 	for index, key := range recKeys {
+		if index >= limit {
+			break
+		}
 		resInOrder[index] = nodeResult.MeasureResults[key]
 	}
 
@@ -2058,7 +2075,15 @@ func performValueColRequestOnMeasureResults(nodeResult *structs.NodeResult, letC
 	return nil
 }
 
-func performFilterRows(nodeResult *structs.NodeResult, filterRows *structs.BoolExpr) error {
+func performFilterRows(nodeResult *structs.NodeResult, filterRows *structs.BoolExpr, recs map[string]map[string]interface{}) error {
+
+	if recs != nil {
+		if err := performFilterRowsWithoutGroupBy(filterRows, recs); err != nil {
+			return fmt.Errorf("performFilterRows: %v", err)
+		}
+		return nil
+	}
+
 	// Ensure all referenced columns are valid.
 	for _, field := range filterRows.GetFields() {
 		if !utils.SliceContainsString(nodeResult.GroupByCols, field) &&
@@ -2073,6 +2098,31 @@ func performFilterRows(nodeResult *structs.NodeResult, filterRows *structs.BoolE
 	}
 	if err := performFilterRowsOnMeasureResults(nodeResult, filterRows); err != nil {
 		return fmt.Errorf("performFilterRows: %v", err)
+	}
+
+	return nil
+}
+
+func performFilterRowsWithoutGroupBy(filterRows *structs.BoolExpr, recs map[string]map[string]interface{}) error {
+	fieldsInExpr := filterRows.GetFields()
+
+	for key, record := range recs {
+		fieldToValue := make(map[string]segutils.CValueEnclosure, 0)
+		err := getRecordFieldValues(fieldToValue, fieldsInExpr, record)
+		if err != nil {
+			log.Errorf("performFilterRowsWithoutGroupBy: %v", err)
+			continue
+		}
+
+		shouldKeep, err := filterRows.Evaluate(fieldToValue)
+		if err != nil {
+			log.Errorf("performFilterRowsWithoutGroupBy: %v", err)
+			continue
+		}
+
+		if !shouldKeep {
+			delete(recs, key)
+		}
 	}
 
 	return nil
