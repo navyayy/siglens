@@ -22,10 +22,10 @@ jobs:
         load: true
         tags: siglens-develop:latest
 
-    - name: Run install.sh script
+    - name: Run install_with_docker.sh script
       run: |
-        chmod +x ./install.sh
-        ./install.sh
+        chmod +x ./install_with_docker.sh
+        ./install_with_docker.sh
       env:
         DOCKER_IMAGE_NAME: "siglens-develop:latest"
         DOCKER_COMPOSE_YAML: "./docker-compose.yml"

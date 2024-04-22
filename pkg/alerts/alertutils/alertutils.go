@@ -1,19 +1,18 @@
-// Copyright (c) 2021-2024 SigScalr, Inc.
-//
-// This file is part of SigLens Observability Solution
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+/*
+Copyright 2023.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package alertutils
 
@@ -95,7 +94,7 @@ type Contact struct {
 	Email       []string           `json:"email" gorm:"type:text[]"`
 	Slack       []SlackTokenConfig `json:"slack" gorm:"many2many:slack_contact;auto_preload"`
 	PagerDuty   string             `json:"pager_duty"`
-	Webhook     []WebHookConfig    `json:"webhook" gorm:"many2many:webhook_contact;auto_preload"`
+	Webhook     []string           `json:"webhook" gorm:"type:text[]"`
 	OrgId       uint64             `json:"org_id"`
 }
 
@@ -107,15 +106,6 @@ type SlackTokenConfig struct {
 
 func (SlackTokenConfig) TableName() string {
 	return "slack_token"
-}
-
-type WebHookConfig struct {
-	ID      uint   `gorm:"primaryKey;autoIncrement:true"`
-	Webhook string `json:"webhook"`
-}
-
-func (WebHookConfig) TableName() string {
-	return "webhook"
 }
 
 type Notification struct {
